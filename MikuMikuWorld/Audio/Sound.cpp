@@ -163,7 +163,7 @@ namespace Audio
 		}
 
 		this->flags = flags;
-		nextIndex = 0;
+		currentIndex = 0;
 	}
 
 	void SoundPool::initialize(const std::string& name, const std::string& path, ma_engine* engine, ma_sound_group* group, SoundFlags flags)
@@ -182,7 +182,7 @@ namespace Audio
 		}
 
 		this->flags = flags;
-		nextIndex = 0;
+		currentIndex = 0;
 	}
 
 	void SoundPool::dispose()
@@ -199,31 +199,7 @@ namespace Audio
 
 	void SoundPool::play(float start, float end)
 	{
-		if (flags & SoundFlags::EXTENDABLE)
-		{
-			// We want to re-use the currently playing instance
-			int currentIndex = std::max(nextIndex - 1, 0);
-			SoundInstance& currentInstance = pool[currentIndex];
-
-			// If the start time is immediate, the source's time is effectively 0 and the sound isn't marked playing yet
-			const bool isCurrentInstancePlaying = ma_sound_is_playing(&currentInstance.source) ||
-				(start == currentInstance.lastStartTime && currentInstance.lastStartTime != 0.0f);
-
-			const bool isNewSoundWithinOldRange = 
-				mmw::isWithinRange(start, currentInstance.lastStartTime, currentInstance.lastEndTime) &&
-				mmw::isWithinRange(end, currentInstance.lastStartTime, currentInstance.lastEndTime);
-
-			if (isNewSoundWithinOldRange && isCurrentInstancePlaying)
-				return;
-
-			if (isCurrentInstancePlaying && end > currentInstance.lastEndTime)
-			{
-				extendInstanceDuration(pool[currentIndex], end);
-				return;
-			}
-		}
-
-		SoundInstance& instance = pool[nextIndex];
+		SoundInstance& instance = pool[currentIndex];
 
 		instance.seek(0);
 		ma_sound_set_start_time_in_milliseconds(&instance.source, start * 1000);
@@ -236,7 +212,7 @@ namespace Audio
 		instance.lastEndTime = end;
 
 		if ((flags & SoundFlags::EXTENDABLE) == 0)
-			nextIndex = ++nextIndex % pool.size();
+			currentIndex = ++currentIndex % pool.size();
 	}
 
 	void SoundPool::stopAll()
@@ -256,15 +232,6 @@ namespace Audio
 
 	bool SoundPool::isAnyPlaying() const
 	{
-		for (const auto& instance : pool)
-			if (instance.isPlaying())
-				return true;
-
-		return false;
-	}
-
-	std::string SoundPool::getName() const
-	{
-		return name;
+		return std::any_of(pool.begin(), pool.end(), [this](const SoundInstance& a) { return isPlaying(a); });
 	}
 }

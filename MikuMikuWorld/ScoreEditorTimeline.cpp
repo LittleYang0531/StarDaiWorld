@@ -2026,7 +2026,7 @@ namespace MikuMikuWorld
 	void ScoreEditorTimeline::setPlaybackSpeed(ScoreContext& context, float speed)
 	{
 		playbackSpeed = std::clamp(speed, minPlaybackSpeed, maxPlaybackSpeed);
-		context.audio.setPlaybackSpeed(playbackSpeed);
+		context.audio.setPlaybackSpeed(playbackSpeed, time);
 	}
 
 	void ScoreEditorTimeline::setPlaying(ScoreContext& context, bool state)
@@ -2039,8 +2039,9 @@ namespace MikuMikuWorld
 		{
 			playStartTime = time;
 			context.audio.seekMusic(time);
-			context.audio.syncAudioEngineTimer();
 			context.audio.playMusic(time);
+			context.audio.setLastPlaybackTime(time);
+			context.audio.syncAudioEngineTimer();
 		}
 		else
 		{
@@ -2070,45 +2071,45 @@ namespace MikuMikuWorld
 		if (!playing)
 			return;
 
+		static auto singleNoteSEFunc = [&context, this](const Note& note, float notePlayTime)
+		{
+			bool playSE = true;
+			if (note.getType() == NoteType::Hold)
+			{
+				playSE = context.score.holdNotes.at(note.ID).startType == HoldNoteType::Normal;
+			}
+			else if (note.getType() == NoteType::HoldEnd)
+			{
+				playSE = context.score.holdNotes.at(note.parentID).endType == HoldNoteType::Normal;
+			}
+
+			if (playSE)
+			{
+				std::string_view se = getNoteSE(note, context.score);
+				std::string key = std::to_string(note.tick) + "-" + se.data();
+				if (!se.empty() && (playingNoteSounds.find(key) == playingNoteSounds.end()))
+				{
+					context.audio.playSoundEffect(se.data(), notePlayTime, -1, time);
+					playingNoteSounds.insert(key);
+				}
+			}
+		};
+
+		static auto holdNoteSEFunc = [&context, this](const Note& note, float startTime)
+		{
+			int endTick = context.score.notes.at(context.score.holdNotes.at(note.ID).end).tick;
+			float endTime = accumulateDuration(endTick, TICKS_PER_BEAT, context.score.tempoChanges);
+
+			float adjustedEndTime = endTime - playStartTime + audioOffsetCorrection;
+			context.audio.playSoundEffect(note.critical ? SE_CRITICAL_CONNECT : SE_CONNECT, startTime, adjustedEndTime, time);
+		};
+
 		playingNoteSounds.clear();
 		for (const auto& [id, note] : context.score.notes)
 		{
 			float noteTime = accumulateDuration(note.tick, TICKS_PER_BEAT, context.score.tempoChanges);
-			float notePlayTime = (noteTime - playStartTime) / playbackSpeed;
-			float offsetNoteTime = noteTime - audioLookAhead;
-
-			static auto singleNoteSEFunc = [&context, this](const Note& note, float notePlayTime)
-			{
-				bool playSE = true;
-				if (note.getType() == NoteType::Hold)
-				{
-					playSE = context.score.holdNotes.at(note.ID).startType == HoldNoteType::Normal;
-				}
-				else if (note.getType() == NoteType::HoldEnd)
-				{
-					playSE = context.score.holdNotes.at(note.parentID).endType == HoldNoteType::Normal;
-				}
-
-				if (playSE)
-				{
-					std::string_view se = getNoteSE(note, context.score);
-					std::string key = std::to_string(note.tick) + "-" + se.data();
-					if (!se.empty() && (playingNoteSounds.find(key) == playingNoteSounds.end()))
-					{
-						context.audio.playSoundEffect(se.data(), notePlayTime, -1);
-						playingNoteSounds.insert(key);
-					}
-				}
-			};
-
-			static auto holdNoteSEFunc = [&context, this, noteTime](const Note& note, float startTime)
-			{
-				int endTick = context.score.notes.at(context.score.holdNotes.at(note.ID).end).tick;
-				float endTime = accumulateDuration(endTick, TICKS_PER_BEAT, context.score.tempoChanges);
-				
-				float adjustedEndTime = endTime - playStartTime + audioOffsetCorrection;
-				context.audio.playSoundEffect(note.critical ? SE_CRITICAL_CONNECT : SE_CONNECT, startTime, adjustedEndTime);
-			};
+			float notePlayTime = noteTime - playStartTime;
+			float offsetNoteTime = noteTime - (audioLookAhead * playbackSpeed);
 
 			if (offsetNoteTime >= timeLastFrame && offsetNoteTime < time)
 			{
@@ -2140,7 +2141,8 @@ namespace MikuMikuWorld
 		if (!drawList)
 			return;
 
-		constexpr ImU32 waveformColor = 0x806C6C6C;
+		constexpr ImU32 waveformColorL = 0x80646464;
+		constexpr ImU32 waveformColorR = 0x80585858;
 
 		// Ideally this should be calculated based on the current BPM
 		const double secondsPerPixel = waveformSecondsPerPixel / zoom;
@@ -2156,7 +2158,9 @@ namespace MikuMikuWorld
 			if (waveform.isEmpty())
 				continue;
 
+			const ImU32 waveformColor = rightChannel ? waveformColorR : waveformColorL;
 			const Audio::WaveformMip& mip = waveform.findClosestMip(secondsPerPixel);
+
 			for (int y = visualOffset - size.y; y < visualOffset; y += 1)
 			{
 				int tick = positionToTick(y);
@@ -2170,9 +2174,9 @@ namespace MikuMikuWorld
 				float rectYPosition = floorf(position.y + visualOffset - y);
 
 				// WARNING: A thickness of 0.5 or less does not draw with integrated graphics (optimization? limitation?)
-				ImVec2 rect1(timelineMidPosition, rectYPosition);
-				ImVec2 rect2(timelineMidPosition + (std::max(0.75f, barValue) * (rightChannel ? 1 : -1)), rectYPosition + 0.75f);
-				drawList->AddRectFilled(rect1, rect2, waveformColor);
+				ImVec2 p1(timelineMidPosition - std::max(0.75f, barValue), rectYPosition);
+				ImVec2 p2(timelineMidPosition + std::max(0.75f, barValue), rectYPosition);
+				drawList->AddLine(p1, p2, waveformColor, 0.75f);
 			}
 		}
 	}
